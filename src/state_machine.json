@@ -1,0 +1,136 @@
+{
+    "Comment": "Attachment association",
+    "StartAt": "Choice",
+    "States": {
+        "Choice": {
+            "Type": "Choice",
+            "Choices": [
+                {
+                    "Variable": "$.detail.eventName",
+                    "StringEquals": "CreateTransitGatewayVpcAttachment",
+                    "Next": "Pass"
+                }
+            ],
+            "Default": "Not attachment creation"
+        },
+        "Not attachment creation": {
+            "Type": "Fail"
+        },
+        "Pass": {
+            "Type": "Pass",
+            "Next": "Get Workload Route Table Id",
+            "Parameters": {
+                "TransitGatewayAttachmentId.$": "$.responseElements.CreateTransitGatewayVpcAttachmentResponse.transitGatewayVpcAttachment.transitGatewayAttachmentId",
+                "AttachmentType": "Workload"
+            },
+            "InputPath": "$.detail"
+        },
+        "Get Workload Route Table Id": {
+            "Type": "Task",
+            "Next": "Get Shared Route Table Id",
+            "Parameters": {
+                "Name.$": "States.Format('{}RouteTableId', $.AttachmentType)"
+            },
+            "Resource": "arn:aws:states:::aws-sdk:ssm:getParameter",
+            "ResultSelector": {
+                "Id.$": "$.Parameter.Value"
+            },
+            "ResultPath": "$.AssociationRouteTable"
+        },
+        "Get Shared Route Table Id": {
+            "Type": "Task",
+            "Next": "DescribeTransitGatewayVpcAttachments",
+            "Parameters": {
+                "Name": "SharedRouteTableId"
+            },
+            "Resource": "arn:aws:states:::aws-sdk:ssm:getParameter",
+            "ResultSelector": {
+                "Id.$": "$.Parameter.Value"
+            },
+            "ResultPath": "$.PropagationRouteTable"
+        },
+        "DescribeTransitGatewayVpcAttachments": {
+            "Type": "Task",
+            "Parameters": {
+                "Filters": [
+                    {
+                        "Name": "transit-gateway-attachment-id",
+                        "Values.$": "States.Array($.TransitGatewayAttachmentId)"
+                    }
+                ]
+            },
+            "Resource": "arn:aws:states:::aws-sdk:ec2:describeTransitGatewayVpcAttachments",
+            "ResultSelector": {
+                "State.$": "$.TransitGatewayVpcAttachments[0].State"
+            },
+            "ResultPath": "$.Attachment",
+            "Next": "Is attachment available?"
+        },
+        "Is attachment available?": {
+            "Type": "Choice",
+            "Choices": [
+                {
+                    "Variable": "$.Attachment.State",
+                    "StringEquals": "available",
+                    "Next": "AssociateTransitGatewayRouteTable"
+                },
+                {
+                    "Variable": "$.Attachment.State",
+                    "StringEquals": "pendingAcceptance",
+                    "Next": "AcceptTransitGatewayVpcAttachment"
+                },
+                {
+                    "Or": [
+                        {
+                            "Variable": "$.Attachment.State",
+                            "StringEquals": "pending"
+                        },
+                        {
+                            "Variable": "$.Attachment.State",
+                            "StringEquals": "initiating"
+                        }
+                    ],
+                    "Next": "Wait for attachment to be available"
+                }
+            ]
+        },
+        "AssociateTransitGatewayRouteTable": {
+            "Type": "Task",
+            "Parameters": {
+                "TransitGatewayAttachmentId.$": "$.TransitGatewayAttachmentId",
+                "TransitGatewayRouteTableId.$": "$.AssociationRouteTable.Id"
+            },
+            "Resource": "arn:aws:states:::aws-sdk:ec2:associateTransitGatewayRouteTable",
+            "Next": "EnableTransitGatewayRouteTablePropagation",
+            "ResultPath": null
+        },
+        "EnableTransitGatewayRouteTablePropagation": {
+            "Type": "Task",
+            "End": true,
+            "Parameters": {
+                "TransitGatewayRouteTableId.$": "$.PropagationRouteTable.Id",
+                "TransitGatewayAttachmentId.$": "$.TransitGatewayAttachmentId"
+            },
+            "Resource": "arn:aws:states:::aws-sdk:ec2:enableTransitGatewayRouteTablePropagation"
+        },
+        "AcceptTransitGatewayVpcAttachment": {
+            "Type": "Task",
+            "Parameters": {
+                "TransitGatewayAttachmentId.$": "$.TransitGatewayAttachmentId"
+            },
+            "Resource": "arn:aws:states:::aws-sdk:ec2:acceptTransitGatewayVpcAttachment",
+            "Next": "Wait for attachment acceptance",
+            "ResultPath": null
+        },
+        "Wait for attachment acceptance": {
+            "Type": "Wait",
+            "Seconds": 5,
+            "Next": "DescribeTransitGatewayVpcAttachments"
+        },
+        "Wait for attachment to be available": {
+            "Type": "Wait",
+            "Seconds": 0,
+            "Next": "DescribeTransitGatewayVpcAttachments"
+        }
+    }
+}
